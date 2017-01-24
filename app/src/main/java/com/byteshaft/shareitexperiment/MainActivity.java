@@ -1,44 +1,40 @@
 package com.byteshaft.shareitexperiment;
 
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.database.Cursor;
 import android.net.Uri;
-import android.net.nsd.NsdManager;
-import android.net.nsd.NsdServiceInfo;
+import android.net.wifi.ScanResult;
 import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiManager;
 import android.os.Bundle;
-import android.os.Environment;
 import android.provider.MediaStore;
 import android.support.v7.app.AppCompatActivity;
-import android.util.Log;
+import android.util.Base64;
 import android.view.View;
 import android.widget.Button;
 
+import java.io.BufferedInputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.File;
-import java.io.FileOutputStream;
+import java.io.FileInputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.InetSocketAddress;
-import java.net.ServerSocket;
+import java.io.UnsupportedEncodingException;
+import java.net.InetAddress;
 import java.net.Socket;
+import java.net.UnknownHostException;
 import java.util.List;
 
-public class MainActivity extends AppCompatActivity implements View.OnClickListener,
-        NsdManager.RegistrationListener, NsdManager.DiscoveryListener {
+public class MainActivity extends AppCompatActivity implements View.OnClickListener {
 
-    private Hotspot mHotspot;
-    private boolean mCreated;
-    private String mServiceName;
-    private NsdManager mNsdManager;
-    private static final String TAG = "OK";
-    public static final String SERVICE_TYPE = "_fileshare._tcp";
-    public static final String SERVICE_NAME = "fileshare";
-    private boolean mWaitingForConnection;
     private final int RESULT_LOAD_IMAGE = 101;
     private String mImagePath;
+    private WifiManager mWifiManager;
+    private boolean mScanRequested;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -48,8 +44,59 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
         Button buttonReceive = (Button) findViewById(R.id.button_receive);
         buttonSend.setOnClickListener(this);
         buttonReceive.setOnClickListener(this);
-        mHotspot = new Hotspot(getApplicationContext());
-        mNsdManager = (NsdManager) getSystemService(Context.NSD_SERVICE);
+        mWifiManager = (WifiManager) getSystemService(WIFI_SERVICE);
+        registerReceiver(mWifiScanReceiver, new IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION));
+    }
+
+    private final BroadcastReceiver mWifiScanReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context c, Intent intent) {
+            if (intent.getAction().equals(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION) && mScanRequested) {
+                mScanRequested = false;
+                List<ScanResult> mScanResults = mWifiManager.getScanResults();
+                for (ScanResult result : mScanResults) {
+                    if (result.SSID.startsWith("SH-")) {
+                        String[] ssidData = result.SSID.split("-");
+                        String identifier = decodeString(ssidData[1]);
+                        final String port = decodeString(ssidData[2]);
+                        if (!mWifiManager.getConnectionInfo().getSSID().contains(result.SSID)) {
+                            WifiConfiguration conf = new WifiConfiguration();
+                            conf.SSID = "\"" + result.SSID + "\"";
+                            conf.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.NONE);
+                            final WifiManager wifiManager = (WifiManager)getSystemService(Context.WIFI_SERVICE);
+                            wifiManager.addNetwork(conf);
+                            List<WifiConfiguration> list = wifiManager.getConfiguredNetworks();
+                            for( WifiConfiguration i : list ) {
+                                if(i.SSID != null && i.SSID.equals("\"" + result.SSID + "\"")) {
+                                    wifiManager.disconnect();
+                                    wifiManager.enableNetwork(i.networkId, true);
+                                    wifiManager.reconnect();
+                                }
+                            }
+                        }
+                        new Thread(new Runnable() {
+                            @Override
+                            public void run() {
+                                String hostIP = intToInetAddress(mWifiManager.getDhcpInfo().serverAddress).toString().replace("/", "");
+                                sendFileOverNetwork(hostIP, port, mImagePath);
+                            }
+                        }).start();
+                        break;
+                    }
+                }
+            }
+        }
+    };
+
+    private String decodeString(String base64String) {
+        byte[] data = Base64.decode(base64String, Base64.DEFAULT);
+        String text = null;
+        try {
+            text = new String(data, "UTF-8");
+        } catch (UnsupportedEncodingException e) {
+            e.printStackTrace();
+        }
+        return text;
     }
 
     @Override
@@ -58,24 +105,20 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
         if (requestCode == RESULT_LOAD_IMAGE && resultCode == RESULT_OK && null != data) {
             Uri selectedImage = data.getData();
             mImagePath = getImgPath(selectedImage);
-            String networkSSID = "1234567890abcdef";
-            WifiConfiguration conf = new WifiConfiguration();
-            conf.SSID = "\"" + networkSSID + "\"";
-            conf.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.NONE);
-            WifiManager wifiManager = (WifiManager)getSystemService(Context.WIFI_SERVICE);
-            wifiManager.addNetwork(conf);
-            List<WifiConfiguration> list = wifiManager.getConfiguredNetworks();
-            for( WifiConfiguration i : list ) {
-                if(i.SSID != null && i.SSID.equals("\"" + networkSSID + "\"")) {
-                    wifiManager.disconnect();
-                    wifiManager.enableNetwork(i.networkId, true);
-                    wifiManager.reconnect();
-                    break;
-                }
-            }
-            System.out.println("Reached discovery start code");
-            mNsdManager.discoverServices(
-                    SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, MainActivity.this);
+            mScanRequested = true;
+            mWifiManager.startScan();
+        }
+    }
+    private InetAddress intToInetAddress(int hostAddress) {
+        byte[] addressBytes = { (byte)(0xff & hostAddress),
+                (byte)(0xff & (hostAddress >> 8)),
+                (byte)(0xff & (hostAddress >> 16)),
+                (byte)(0xff & (hostAddress >> 24)) };
+
+        try {
+            return InetAddress.getByAddress(addressBytes);
+        } catch (UnknownHostException e) {
+            throw new AssertionError();
         }
     }
 
@@ -95,177 +138,33 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
                 startActivityForResult(intent, RESULT_LOAD_IMAGE);
                 break;
             case R.id.button_receive:
-                if (mCreated) {
-                    mHotspot.destroy();
-                    mNsdManager.unregisterService(this);
-                    mCreated = false;
-                } else {
-                    mHotspot.create("1234567890abcdef");
-                    try {
-                        ServerSocket socket = new ServerSocket(0);
-                        int port = socket.getLocalPort();
-                        registerService(port);
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                    }
-                    mCreated = true;
-                }
+                startActivity(new Intent(getApplicationContext(), ReceiveActivity.class));
                 break;
         }
     }
 
-    public void registerService(int port) {
-        NsdServiceInfo serviceInfo  = new NsdServiceInfo();
-        serviceInfo.setServiceName(SERVICE_NAME);
-        serviceInfo.setServiceType(SERVICE_TYPE);
-        serviceInfo.setPort(port);
-        mNsdManager.registerService(serviceInfo, NsdManager.PROTOCOL_DNS_SD, this);
-    }
-
-    @Override
-    public void onRegistrationFailed(NsdServiceInfo nsdServiceInfo, int i) {
-        System.out.println("Registration failed " + i);
-    }
-
-    @Override
-    public void onUnregistrationFailed(NsdServiceInfo nsdServiceInfo, int i) {
-
-    }
-
-    @Override
-    public void onServiceRegistered(final NsdServiceInfo nsdServiceInfo) {
-        mServiceName = nsdServiceInfo.getServiceName();
-        System.out.println("Registered: " + mServiceName);
-        mWaitingForConnection = true;
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    ServerSocket serverSocket = new ServerSocket(nsdServiceInfo.getPort());
-                    while (mWaitingForConnection) {
-                        Socket socket = serverSocket.accept();
-                        final File f = new File(Environment.getExternalStorageDirectory() + "/"
-                                + getPackageName() + "/shareitexperiment-" + System.currentTimeMillis()
-                                + ".jpg");
-                        File dirs = new File(f.getParent());
-                        if (!dirs.exists())
-                            dirs.mkdirs();
-                        f.createNewFile();
-                        InputStream inputstream = socket.getInputStream();
-                        copyFile(inputstream, new FileOutputStream(f));
-                        serverSocket.close();
-                    }
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
-            }
-        }).start();
-    }
-
-    public static boolean copyFile(InputStream inputStream, OutputStream out) {
-        byte buf[] = new byte[1024];
-        int len;
+    private void sendFileOverNetwork(String hostIP, String port, String filePath) {
         try {
-            while ((len = inputStream.read(buf)) != -1) {
-                out.write(buf, 0, len);
-            }
-            out.close();
-            inputStream.close();
+            Socket sock = new Socket(hostIP, Integer.valueOf(port));
+            File myFile = new File(filePath);
+            byte[] mybytearray = new byte[(int) myFile.length()];
+            FileInputStream fis = new FileInputStream(myFile);
+            BufferedInputStream bis = new BufferedInputStream(fis);
+            DataInputStream dis = new DataInputStream(bis);
+            dis.readFully(mybytearray, 0, mybytearray.length);
+            OutputStream os = sock.getOutputStream();
+
+            //Sending file name and file size to the server
+            DataOutputStream dos = new DataOutputStream(os);
+            dos.writeUTF(myFile.getName());
+            dos.writeLong(mybytearray.length);
+            dos.write(mybytearray, 0, mybytearray.length);
+            dos.flush();
+
+            //Closing socket
+            sock.close();
         } catch (IOException e) {
             e.printStackTrace();
-            return false;
-        }
-        return true;
-    }
-
-    @Override
-    public void onServiceUnregistered(NsdServiceInfo nsdServiceInfo) {
-        mWaitingForConnection = false;
-    }
-
-    @Override
-    public void onDiscoveryStarted(String regType) {
-        Log.d(TAG, "Service discovery started " + regType);
-    }
-
-    @Override
-    public void onServiceFound(NsdServiceInfo service) {
-        // A service was found!  Do something with it.
-        Log.d(TAG, "Service discovery success " + service);
-        if (!service.getServiceType().equals(SERVICE_TYPE)) {
-            // Service type is the string containing the protocol and
-            // transport layer for this service.
-            Log.d(TAG, "Unknown Service Type: " + service.getServiceType());
-        } else if (service.getServiceName().equals(mServiceName)) {
-            // The name of the service tells the user what they'd be
-            // connecting to. It could be "Bob's Chat App".
-            Log.d(TAG, "Same machine: " + mServiceName);
-        } else if (service.getServiceName().contains(SERVICE_NAME)){
-            mNsdManager.resolveService(service, new NsdManager.ResolveListener() {
-                @Override
-                public void onResolveFailed(NsdServiceInfo nsdServiceInfo, int i) {
-                    System.out.println("Resolve failed");
-                }
-
-                @Override
-                public void onServiceResolved(NsdServiceInfo nsdServiceInfo) {
-                    System.out.println("Resolve successful");
-                    System.out.println(nsdServiceInfo.getHost().toString());
-                    sendFileOverNetwork(nsdServiceInfo, mImagePath);
-                }
-            });
-        }
-    }
-
-    @Override
-    public void onServiceLost(NsdServiceInfo service) {
-        // When the network service is no longer available.
-        // Internal bookkeeping code goes here.
-        Log.e(TAG, "service lost" + service);
-    }
-
-    @Override
-    public void onDiscoveryStopped(String serviceType) {
-        Log.i(TAG, "Discovery stopped: " + serviceType);
-    }
-
-    @Override
-    public void onStartDiscoveryFailed(String serviceType, int errorCode) {
-        Log.e(TAG, "Discovery failed: Error code:" + errorCode);
-        mNsdManager.stopServiceDiscovery(this);
-    }
-
-    @Override
-    public void onStopDiscoveryFailed(String serviceType, int errorCode) {
-        Log.e(TAG, "Discovery failed: Error code:" + errorCode);
-        mNsdManager.stopServiceDiscovery(this);
-    }
-
-    private void sendFileOverNetwork(NsdServiceInfo nsdServiceInfo, String filePath) {
-        int len;
-        Socket socket = new Socket();
-        byte buf[]  = new byte[8000];
-        try {
-            socket.bind(null);
-            socket.connect((new InetSocketAddress(
-                    nsdServiceInfo.getHost().toString(), nsdServiceInfo.getPort())), 500);
-            OutputStream outputStream = socket.getOutputStream();
-            InputStream inputStream = getContentResolver().openInputStream(Uri.parse(filePath));
-            while ((len = inputStream.read(buf)) != -1) {
-                outputStream.write(buf, 0, len);
-            }
-            outputStream.close();
-            inputStream.close();
-        } catch (IOException e) {
-            e.printStackTrace();
-        } finally {
-            if (socket.isConnected()) {
-                try {
-                    socket.close();
-                } catch (IOException e) {
-                    //catch logic
-                }
-            }
         }
     }
 }

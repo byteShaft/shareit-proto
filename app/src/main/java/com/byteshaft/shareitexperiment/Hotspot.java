@@ -7,13 +7,15 @@ import android.util.Log;
 
 import java.lang.reflect.Method;
 
-public class Hotspot {
+class Hotspot {
 
+    private boolean mCreated;
     private Context mContext;
     private boolean mWasWifiDisabled;
     private WifiManager mWifiManager;
+    private String mName;
 
-    public Hotspot(Context context) {
+    Hotspot(Context context) {
         mContext = context;
         mWifiManager = (WifiManager) mContext.getSystemService(Context.WIFI_SERVICE);
     }
@@ -25,7 +27,27 @@ public class Hotspot {
         }
     }
 
+    boolean isCreated() {
+        try {
+            Method getWifiApConfigurationMethod = mWifiManager.getClass().getMethod("getWifiApConfiguration");
+            WifiConfiguration netConfig = (WifiConfiguration)getWifiApConfigurationMethod.invoke(mWifiManager);
+            return netConfig.SSID.equals(mName);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private boolean isAPCreated() {
+        try {
+            Method isWifiApEnabledMethod = mWifiManager.getClass().getMethod("isWifiApEnabled");
+            return (boolean) (Boolean) isWifiApEnabledMethod.invoke(mWifiManager);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     void create(String name) {
+        mName = name;
         turnOffWifiIfOn();
         WifiConfiguration netConfig = new WifiConfiguration();
         netConfig.SSID = name;
@@ -36,13 +58,10 @@ public class Hotspot {
         try {
             Method setWifiApMethod = mWifiManager.getClass().getMethod(
                     "setWifiApEnabled", WifiConfiguration.class, boolean.class);
-            boolean apstatus = (Boolean) setWifiApMethod.invoke(mWifiManager, netConfig, true);
-//            Method isWifiApEnabledMethod = mWifiManager.getClass().getMethod("isWifiApEnabled");
-//            while(!(Boolean) isWifiApEnabledMethod.invoke(mWifiManager)) {}
+            mCreated = (boolean) (Boolean) setWifiApMethod.invoke(mWifiManager, netConfig, true);
+            while (!isAPCreated()) {}
 //            Method getWifiApStateMethod = mWifiManager.getClass().getMethod("getWifiApState");
 //            int apstate = (Integer) getWifiApStateMethod.invoke(mWifiManager);
-//            Method getWifiApConfigurationMethod = mWifiManager.getClass().getMethod("getWifiApConfiguration");
-//            netConfig = (WifiConfiguration)getWifiApConfigurationMethod.invoke(mWifiManager);
         } catch (Exception e) {
             Log.e("HOTSPOT", "", e);
         }
@@ -52,7 +71,7 @@ public class Hotspot {
         try {
             Method setWifiApMethod = mWifiManager.getClass().getMethod(
                     "setWifiApEnabled", WifiConfiguration.class, boolean.class);
-            setWifiApMethod.invoke(mWifiManager, null, false);
+            mCreated = (boolean) setWifiApMethod.invoke(mWifiManager, null, false);
         } catch (Exception e) {
             Log.e("HOTSPOT", "", e);
         }
